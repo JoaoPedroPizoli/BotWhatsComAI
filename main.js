@@ -13,10 +13,14 @@ import pLimit from 'p-limit';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import dotenv from 'dotenv';
-import { AgenteQA } from './llmChain.js';
+import { TextoAudio } from './tts.js'; 
+
+import { AgenteQA } from './LLMs/llmChain.js'
+import { AgenteHumanizador } from './LLMs/humanizador.js';
 
 dotenv.config();
-const txtApontamento = "/view_apontamentos.txt";
+const txtHumanizador = "./DocsRAG/humanizador.txt"
+const txtApontamento = "./DocsRAG/view_apontamentos.txt";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -27,7 +31,7 @@ const httpsAgent = new https.Agent({ keepAlive: true });
 const axiosInstance = axios.create({ httpsAgent });
 
 const cache = new NodeCache({ stdTTL: 3600, checkperiod: 120 });
-const limit = pLimit(5); 
+const limit = pLimit(5);
 const mensagensRespondidas = new Map();
 const TEMPO_ARMAZENAMENTO = 5 * 60 * 1000; 
 
@@ -67,7 +71,6 @@ try {
     process.exit(1);
 }
 
-// Função para converter OGG para WAV
 async function convertOggToWav(inputPath, outputPath) {
     return new Promise((resolve, reject) => {
         ffmpeg(inputPath)
@@ -92,7 +95,6 @@ async function convertOggToWav(inputPath, outputPath) {
     });
 }
 
-// Função para transcrever áudio usando Python (chamando transcribe.py)
 async function transcribeAudio(audioFilePath) {
     const cachedTranscription = cache.get(audioFilePath);
     if (cachedTranscription) {
@@ -142,7 +144,7 @@ async function executeQuery(query, params = {}) {
     } finally {
         if (connection) {
             try {
-                await connection.close(); 
+                await connection.close();
                 console.log('🔒 Conexão retornada ao pool.');
             } catch (err) {
                 console.error('❌ Erro ao retornar a conexão ao pool:', err);
@@ -161,10 +163,12 @@ function processUserMessage(iaResponse) {
 async function respostaHumanizada(userMessage, respostaModelo) {
     try {
         console.log('🧠 Enviando mensagem para a IA Humanizadora de Dados...');
-        const prompts = `${userMessage} ${respostaModelo}`;
-        const iaResponseHuman = await getAIResponse(prompts, 'gptHumanizador3b');//AAAAIIIIIIII
-        console.log(`🤖 Resposta da IA Humanizada: ${iaResponseHuman}`);
-        return iaResponseHuman;
+        const agenteHumanizado = await new AgenteHumanizador("qwen2.5:14b",txtHumanizador,1000,0,"similarity").init(); 
+        const agenteHumanChain = agenteHumanizado.queryChain();
+        const iaResponseHuman = await agenteHumanChain.invoke({input: userMessage, dados: respostaModelo});
+        const iaResponseHumano = iaResponseHuman.answer;
+        console.log(`🤖 Resposta da IA Humanizada: ${iaResponseHumano}`);
+        return iaResponseHumano;
     } catch (error) {
         console.error('❌ Erro ao humanizar a resposta:', error);
         return '❌ Desculpe, ocorreu um erro ao processar sua mensagem.';
@@ -189,7 +193,16 @@ client.on('ready', () => {
 
 client.on('message', async (msg) => {
     const userNumber = msg.from;
-    const messageText = msg.body.trim().toLowerCase();
+    let messageText = msg.body.trim().toLowerCase();
+    if(msg){
+        await client.sendMessage(
+            msg.from, 
+            '⏳ Gerando a consulta com AI, aguarde por favor!\n\n' +
+            '- Para cancelar a requisição atual, digite e envie *CANCELAR* no chat.\n\n' +
+            '- Para receber a resposta em Áudio (apenas áudio), escreva *$* antes de escrever a requisição.\n\n' +
+            '- Para receber a resposta em Áudio e Texto, escreva *&* antes de escrever a requisição.'
+        );
+    }
 
     const requestId = Date.now() + '-' + Math.random().toString(36).substr(2, 9);
 
@@ -273,9 +286,7 @@ client.on('message', async (msg) => {
                 finalizeRequest();
                 return;
             }
-
             console.log(`📝 Transcrição da mensagem de áudio: ${userMessage}`);
-
             await fs.remove(audioFileName);
             await fs.remove(wavFileName);
             console.log('🗑️ Arquivos temporários removidos.');
@@ -289,11 +300,23 @@ client.on('message', async (msg) => {
             return;
         }
 
+        let sendAudioOnly = false;
+        let sendAudioAndText = false;
+
+        if (userMessage.trim().startsWith('$')) {
+            userMessage = userMessage.trim().substring(1).trim();
+            sendAudioOnly = true;
+        } else if (userMessage.trim().startsWith('&')) {
+            userMessage = userMessage.trim().substring(1).trim();
+            sendAudioAndText = true;
+        }
+
         console.log('🤖 Enviando mensagem para a IA Geradora de Query...');
-        const agenteAi = await new AgenteQA("qwen2.5-coder:32b",txtApontamento,1000,0,"similarity").init(); //AIIIIIII
+        const agenteAi = await new AgenteQA("qwen2.5-coder:32b", txtApontamento, 1000, 0, "similarity").init(); 
         const agenteAiChain = agenteAi.queryChain();
-        const iaResponseTotal = await agenteAiChain.invoke({input: userMessage});
-        const iaResponse = iaResponseTotal.answer
+        const iaResponseTotal = await agenteAiChain.invoke({ input: userMessage });
+        const iaResponse = iaResponseTotal.answer;
+
         if (checkCancel()) {
             console.log('🚫 A requisição foi cancelada antes de executar a consulta.');
             finalizeRequest();
@@ -331,7 +354,18 @@ client.on('message', async (msg) => {
                         return;
                     }
 
-                    await client.sendMessage(msg.from, respostaHuman);
+                    
+                    if (sendAudioOnly) {
+                        TextoAudio(client,msg.from,respostaHuman);
+                    }
+                    else if (sendAudioAndText) {
+                        await client.sendMessage(msg.from, respostaHuman);
+                        TextoAudio(client,msg.from,respostaHuman);
+                    }
+                    else {
+                        await client.sendMessage(msg.from, respostaHuman);
+                    }
+
                     console.log(`✅ Resposta enviada para ${msg.from}`);
                 } catch (dbError) {
                     console.error('❌ Erro ao executar a consulta no banco de dados:', dbError);
@@ -364,6 +398,7 @@ client.on('message', async (msg) => {
         userRequests.set(userNumber, newReqs);
     }
 });
+
 
 setInterval(() => {
     const agora = Date.now();

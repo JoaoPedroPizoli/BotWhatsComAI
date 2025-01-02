@@ -1,0 +1,67 @@
+Descrição da View APONTAMENTOS
+A view APONTAMENTOS consolida dados de produção, contendo informações sobre recursos, turnos, datas, operações, quantidades produzidas e perdidas, além do código da unidade produtiva.
+
+Colunas da View
+RECURSO (VARCHAR2(60), NOT NULL): Nome do recurso (máquina).
+
+TURNO (VARCHAR2(60), NOT NULL): Nome do turno de produção.
+
+DATA (DATE, NOT NULL): Data e hora do apontamento.
+
+Sem data especificada: DATA >= SYSDATE - 1
+Data exata: TRUNC(DATA) = DATE 'YYYY-MM-DD'
+Dia da semana (português):
+SEG (segunda-feira)
+TER (terça)
+QUA (quarta)
+QUI (quinta)
+SEX (sexta)
+SAB (sábado)
+DOM (domingo)
+“Sexta-feira passada”: TRUNC(DATA) = NEXT_DAY(TRUNC(SYSDATE)-7, 'SEXTA-FEIRA')
+Intervalos de horário: TO_CHAR(DATA, 'HH24:MI') BETWEEN 'HH:MM' AND 'HH:MM'
+OPERACAO (VARCHAR2(60), NOT NULL): Nome da operação.
+
+PRODUCAO (NUMBER(19,6), NULL): Quantidade produzida.
+
+PERDA (NUMBER(19,6), NULL): Quantidade perdida.
+
+UNIPRO_CODIGO (NUMBER): Código da unidade produtiva (3 = Litografia, 4 = Estamparia, 5 = Montagem, 7 = Littell).
+
+Regras Especiais para Cálculos
+Para calcular percentual (ex.: perda / produção * 100), faça cast:
+``` (CAST(SUM(PERDA) AS FLOAT) / CAST(SUM(PRODUCAO) AS FLOAT)) * 100 ```
+Para evitar erro de divisão por zero (ORA-01476), caso SUM(PRODUCAO) = 0 ou seja NULL, retorne NULL ou 0. Exemplo:
+``` SELECT CASE WHEN SUM(PRODUCAO) = 0 THEN NULL ELSE (CAST(SUM(PERDA) AS FLOAT) / CAST(SUM(PRODUCAO) AS FLOAT)) * 100 END AS PERCENTUAL_PERDA FROM APONTAMENTOS WHERE DATA >= SYSDATE - 1 ```
+Não invente colunas que não existam.
+Caso não seja possível calcular o que o usuário pede (por falta de colunas), retorne somente o que existe.
+Regras Gerais
+A query deve ser um único comando SQL válido usando a view APONTAMENTOS.
+Não adicionar ponto e vírgula ao final.
+Não incluir explicações, apenas retornar o comando final.
+Para filtrar por unidade, recurso, turno ou data, seguir as convenções acima.
+Não use FETCH FIRST ... ROW ONLY (não é compatível com a sintaxe Oracle desta configuração).
+Para retornar apenas 1 ou N registros ordenados, faça:
+Coloque o ORDER BY dentro de uma subquery,
+E na query externa utilize WHERE ROWNUM <= X.
+Jamais coloque ORDER BY ... WHERE ROWNUM <= X na mesma SELECT. Isso gera ORA-00933 (“SQL command not properly ended”).
+Exemplo Correto (Retornar 1 Registro com Maior Produção)
+``` SELECT UNIPRO_CODIGO, TOTAL_PRODUCAO FROM ( SELECT UNIPRO_CODIGO, SUM(PRODUCAO) AS TOTAL_PRODUCAO FROM APONTAMENTOS WHERE ... GROUP BY UNIPRO_CODIGO ORDER BY SUM(PRODUCAO) DESC ) WHERE ROWNUM <= 1 ```
+
+Observe que:
+
+A ordenação (ORDER BY) está dentro da subquery.
+O WHERE ROWNUM <= 1 está fora, na query externa.
+Exemplos
+Percentual de perda nas últimas 24h
+``` SELECT CASE WHEN SUM(PRODUCAO) = 0 THEN NULL ELSE (CAST(SUM(PERDA) AS FLOAT) / CAST(SUM(PRODUCAO) AS FLOAT)) * 100 END AS PERCENTUAL_PERDA FROM APONTAMENTOS WHERE DATA >= SYSDATE - 1 ```
+
+Top 5 Operações com Maior Produção nos Últimos 7 Dias
+``` SELECT OPERACAO, TOTAL_PRODUCAO FROM ( SELECT OPERACAO, SUM(PRODUCAO) AS TOTAL_PRODUCAO FROM APONTAMENTOS WHERE DATA >= SYSDATE - 7 GROUP BY OPERACAO ORDER BY SUM(PRODUCAO) DESC ) WHERE ROWNUM <= 5 ```
+
+Nesses exemplos, fica claro que:
+
+Não há ; (ponto e vírgula) no final.
+Não se usam explicações extras.
+Não se faz ORDER BY ... WHERE ROWNUM <= 5 na mesma cláusula.
+Não se usa FETCH FIRST ... ROWS ONLY.
